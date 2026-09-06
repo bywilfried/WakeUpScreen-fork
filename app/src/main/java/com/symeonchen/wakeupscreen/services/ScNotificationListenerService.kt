@@ -6,20 +6,25 @@ import android.os.PowerManager
 import android.service.notification.NotificationListenerService
 import android.service.notification.NotificationListenerService.Ranking
 import android.service.notification.StatusBarNotification
-import com.symeonchen.wakeupscreen.services.notification.BlockReason
-import com.symeonchen.wakeupscreen.services.notification.ConditionParam
-import com.symeonchen.wakeupscreen.services.notification.ListenerManager
 import com.symeonchen.wakeupscreen.data.LogStatus
 import com.symeonchen.wakeupscreen.data.NotificationLogEntry
 import com.symeonchen.wakeupscreen.data.NotificationLogStore
-import com.symeonchen.wakeupscreen.services.notification.ConditionState
 import com.symeonchen.wakeupscreen.pages.NightGlowActivity
+import com.symeonchen.wakeupscreen.services.notification.BlockReason
+import com.symeonchen.wakeupscreen.services.notification.ConditionParam
+import com.symeonchen.wakeupscreen.services.notification.ConditionState
+import com.symeonchen.wakeupscreen.services.notification.ListenerManager
 import com.symeonchen.wakeupscreen.services.reminder.ReminderEngine
 import com.symeonchen.wakeupscreen.utils.ChannelLogInfo
-import com.symeonchen.wakeupscreen.utils.ScreenWakeUtils
 import com.symeonchen.wakeupscreen.utils.DataInjection
+import com.symeonchen.wakeupscreen.utils.ScreenWakeUtils
 import com.symeonchen.wakeupscreen.utils.toLogInfo
-import kotlinx.coroutines.*
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 /**
  * Created by SymeonChen on 2019-10-27.
@@ -29,8 +34,13 @@ class ScNotificationListenerService : NotificationListenerService() {
 
     companion object {
         private val TAG = this::class.java.simpleName
-        @Volatile var instance: ScNotificationListenerService? = null
+        private const val NOTIFICATION_GRACE_PERIOD_MS = 1000L
+
+        @Volatile
+        var instance: ScNotificationListenerService? = null
     }
+
+    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
     override fun onCreate() {
         super.onCreate()
@@ -41,9 +51,10 @@ class ScNotificationListenerService : NotificationListenerService() {
     }
 
     override fun onDestroy() {
-        super.onDestroy()
+        serviceScope.cancel()
         instance = null
         AttentionTracker.unregister(applicationContext)
+        super.onDestroy()
     }
 
     override fun onListenerConnected() {
@@ -73,11 +84,29 @@ class ScNotificationListenerService : NotificationListenerService() {
         }
     }
 
-    @OptIn(DelicateCoroutinesApi::class)
     override fun onNotificationPosted(sbn: StatusBarNotification?) {
         super.onNotificationPosted(sbn)
         sbn ?: return
 
+        // Give other notification-management apps a brief opportunity to snooze
+        // or remove the notification. Only process it if this exact notification
+        // is still active after the grace period.
+        serviceScope.launch {
+            delay(NOTIFICATION_GRACE_PERIOD_MS)
+
+            val stillActive = safeActiveNotifications()
+                ?.any { active -> active.key == sbn.key }
+                ?: false
+
+            if (!stillActive) {
+                return@launch
+            }
+
+            processNotification(sbn)
+        }
+    }
+
+    private fun processNotification(sbn: StatusBarNotification) {
         val channelInfo = channelInfoOf(sbn)
 
         // A new message restarts the reminder streak whatever the outcome
@@ -85,7 +114,7 @@ class ScNotificationListenerService : NotificationListenerService() {
         // thing that will bring it up later.
         ReminderEngine.onNotificationPosted(applicationContext, sbn)
 
-        //Pre check for better performance
+        // Pre check for better performance
         if (ConditionState.BLOCK == preCheckStatusOpen()) {
             logNotification(
                 sbn.packageName, LogStatus.BLOCKED, BlockReason.APP_SWITCH_OFF, channelInfo
@@ -203,5 +232,4 @@ class ScNotificationListenerService : NotificationListenerService() {
         }
         return ConditionState.SUCCESS
     }
-
 }
