@@ -10,7 +10,7 @@ android {
     compileSdk 36
 
     defaultConfig {
-        applicationId "com.symeonchen.wakeupscreen"
+        applicationId "com.symeonchen.wakeupscreen.fork"
         minSdk 23
         targetSdk 36
         versionCode project.AppVersionCode as int
